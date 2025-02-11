@@ -232,26 +232,26 @@ class Plate(ItemizedResource["Well"]):
     if quadrant == 1:
       return [
         self.get_well((row, column))
-        for row in range(0, self.num_items_y, 2)
         for column in range(0, self.num_items_x, 2)
+        for row in range(0, self.num_items_y, 2)
       ]
     elif quadrant == 2:
       return [
         self.get_well((row, column))
-        for row in range(0, self.num_items_y, 2)
         for column in range(1, self.num_items_x, 2)
+        for row in range(0, self.num_items_y, 2)
       ]
     elif quadrant == 3:
       return [
         self.get_well((row, column))
-        for row in range(1, self.num_items_y, 2)
         for column in range(0, self.num_items_x, 2)
+        for row in range(1, self.num_items_y, 2)
       ]
     elif quadrant == 4:
       return [
         self.get_well((row, column))
-        for row in range(1, self.num_items_y, 2)
         for column in range(1, self.num_items_x, 2)
+        for row in range(1, self.num_items_y, 2)
       ]
     else:
       raise ValueError(f"Invalid quadrant number: {quadrant}. Quadrant must be 1, 2, 3, or 4.")

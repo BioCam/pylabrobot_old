@@ -12,6 +12,7 @@ import warnings
 from typing import (
   Any,
   Callable,
+  Generator,
   Dict,
   List,
   Literal,
@@ -79,6 +80,10 @@ from .standard import (
   SingleChannelAspiration,
   SingleChannelDispense,
 )
+
+from pylabrobot.liquid_handling.backends import STAR
+import statistics
+
 
 logger = logging.getLogger("pylabrobot")
 
@@ -2266,6 +2271,96 @@ class LiquidHandler(Resource, Machine):
       "Cannot assign child resource to liquid handler. Use "
       "lh.deck.assign_child_resource() instead."
     )
+  
+  async def probe_well_zoffsets_of_plate(
+    self,
+    plate_instance: Plate,
+    n_ztouch_replicates: int=3,
+    dist_from_bottom: float=2.0,
+    use_channels: List[int]=[0, 1, 2, 3, 4, 5, 6, 7],
+    verbose: bool=True,
+    **kwargs
+    ) -> Dict[str, float]:
+    """
+    """
+
+    assert isinstance(plate_instance, Plate), (
+        f"Probing target has to be of type Plate, is {type(plate_instance)}"
+    )
+    assert isinstance(self.backend, STAR), (
+        "Wellplate probing is only implemented on PLR-controlled Hamilton STAR and STARlet " + \
+        f"machines, you are using {type(self.backend)}"
+    )
+    
+    has_tip_check = [self.head[idx].has_tip for idx in use_channels] # TODO: precedence constraint no1 for moving to STAR backend
+    if False in has_tip_check:
+        channel_indices_no_tip = [index for index, value in enumerate(has_tip_check) if value == False]
+        raise ValueError(f"Tip(s) {channel_indices_no_tip} do not have a tip, " + \
+                         "wellplate probing requires tips")
+
+    investigated_well_ids = [well.get_identifier() for well in plate_instance.children]
+    no_rows = len(set([int(w.name.split("_")[-1]) for w in plate_instance.children]))
+    use_channels = use_channels[:no_rows]
+    no_channels = len(use_channels)
+    
+    current_plate_offset_dict = {}
+
+    # Case 384-wellplate: Sort wells into quadrants
+    if len(investigated_well_ids) > 96:
+      sorted_plate_children = sum((plate_instance.get_quadrant(i) for i in range(1, 5)), [])
+      investigated_well_ids = [well.get_identifier() for well in sorted_plate_children]
+
+
+    def divide_list_into_chunks(list_l: List[Any], chunk_size: int) -> Generator[List[Any], None, None]:
+        """ Divides a list into smaller chunks of a specified size. """
+        for i in range(0, len(list_l), chunk_size):
+            yield list_l[i:i + chunk_size]
+
+    test_well_id_list = list(divide_list_into_chunks(investigated_well_ids, no_channels))
+
+    for column_idx in range(len(test_well_id_list)):
+        current_well_ids_investigated = test_well_id_list[column_idx]
+    
+        no_channels = len(current_well_ids_investigated)
+        source_wells = plate_instance[current_well_ids_investigated]
+        top_location_abs = source_wells[0].get_absolute_location(z="cavity_bottom").z+dist_from_bottom
+
+        # Safely move channels into position above wells
+        await self.aspirate( # TODO: precedence constraint no2 for moving to STAR backend
+            # ops=ops,
+            source_wells,
+            vols=[0]*no_channels,
+            lld_mode=[self.backend.LLDMode(0)] * no_channels,
+            offsets=[Coordinate(0, 0, dist_from_bottom)]*no_channels,
+            pull_out_distance_transport_air=[0.0]*no_channels, ### TIP STAY AFTER COMMAND
+            min_z_endpos= top_location_abs
+        )
+        
+        # Loop over each well and probe its physical cavity_bottom
+        for channel_idx, well_id in enumerate(current_well_ids_investigated):
+            measurements = []
+            for n_idx in range(n_ztouch_replicates):
+                measured_z_touch = await self.backend.ztouch_probe_z_height_using_channel(
+                    channel_idx=channel_idx,
+                    start_pos_search=top_location_abs,
+                    **kwargs,
+                )
+                measurements.append(measured_z_touch)
+
+            # measurements_arr = np.array(measurements)
+            measured_z_height = round(statistics.mean(measurements),2)
+            cv = statistics.stdev(measurements)/measured_z_height*100
+            prior_z_height = plate_instance[well_id][0].get_absolute_location().z
+            current_plate_offset_dict[well_id] = round(measured_z_height - prior_z_height, 2)
+            
+            if cv > 8:
+                print(f" --- WARNING: {well_id=} | CV = {round(cv,2)}% > 8%")
+    
+            if verbose:
+                print(f"{well_id=} | [{measured_z_height=}, max:{round(max(measurements),2)} " + \
+                      f"] VS {prior_z_height=} [cv={round(cv,2)}]")
+
+    return current_plate_offset_dict
 
 
 class OperationCallback(Protocol):
